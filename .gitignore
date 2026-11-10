@@ -1,0 +1,16 @@
+# Executable files
+client
+server
+
+# Object files
+*.o
+*.out
+
+# Build directory
+build/
+
+# Logs
+*.log
+
+# IDE
+.vscode/
