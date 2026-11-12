@@ -1,7 +1,14 @@
 #include "client.h"
+#include "message_parser.h"
+#include <signal.h>
 
 bool TcpClient::Socket_Init()
 {
+    // 忽略 SIGPIPE：若服务端已关闭连接，客户端再次 send() 时默认会收到 SIGPIPE
+    // 并导致整个进程被终止。改为忽略该信号后，send() 会返回 -1 且 errno=EPIPE，
+    // 从而可以在代码里按错误处理，而不是被信号直接杀掉。
+    signal(SIGPIPE, SIG_IGN);
+
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (-1 == sockfd)
     {
@@ -46,13 +53,27 @@ void TcpClient::Run()
             break;
         }
 
+        // 1. 将用户输入转换为 Payload
+        vector<uint8_t> payload(line.begin(), line.end());
+
+        // 2. 构造协议头
+        MessageHeader header;
+        header.magic = PROTOCOL_MAGIC;
+        header.version = PROTOCOL_VERSION;
+        header.type = MessageType::DATA_REPORT;
+        header.device_id = 100;
+        header.length = payload.size();
+
+        // 3. 编码完整协议消息
+        vector<uint8_t> message = EncodeMessage(header, payload);
         // 循环发送，防止 send 只发送部分数据（TCP 是字节流，单次 send 可能只发出部分字节）
-        size_t total = line.size();
-        size_t sent = 0;
+        size_t total = message.size(); // 发送总长度 = 编码后的完整协议消息字节数
+        size_t sent = 0;               // 已发送字节数
         bool send_ok = true;
         while (sent < total)
         {
-            int n = send(sockfd, line.c_str() + sent, total - sent, 0);
+            // 起始地址：编码消息缓冲区 + 已发送字节数；剩余长度 = total - sent
+            ssize_t n = send(sockfd, message.data() + sent, total - sent, 0);
             if (n == 0) // 返回 0：连接已关闭，避免死循环
             {
                 cout << "发送失败: 连接已关闭" << endl;

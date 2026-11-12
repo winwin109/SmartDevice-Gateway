@@ -13,4 +13,12 @@ build/
 *.log
 
 # IDE
-.vscode/
+.vscode/# 编译生成的可执行文件
+server
+client
+protocol_test
+message_parser_test
+
+# 临时文件
+*.o
+*.out

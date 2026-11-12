@@ -1,4 +1,5 @@
 #include "server.h"
+#include "message_parser.h"
 bool SerConf::ReadConf(string filename) // 读取配置文件
 {
     FILE *fp = fopen(filename.c_str(), "r");
@@ -18,7 +19,7 @@ bool SerConf::ReadConf(string filename) // 读取配置文件
             continue;
         }
 
-        char *k = strtok(buff, " \t\r\n");   // 支持空格/Tab/回车/换行作为分隔符
+        char *k = strtok(buff, " \t\r\n"); // 支持空格/Tab/回车/换行作为分隔符
         char *v = strtok(NULL, " \t\r\n");
         if (k == NULL || v == NULL)
         {
@@ -146,11 +147,13 @@ void TcpSer::Run()
         }
         cout << "客户端已连接" << endl;
 
-        char buff[256] = {0};
+        MessageParser parser; // 每个客户端连接一个独立的解析器，避免不同连接间的数据互相串扰
+
+        uint8_t buff[1024] = {0};
+        bool connection_closed = false; // 标记当前客户端连接是否已在 INVALID 分支中被关闭
         while (true) // 同一个客户端可以连续发送多条消息
         {
-            memset(buff, 0, sizeof(buff));
-            int n = recv(c, buff, sizeof(buff) - 1, 0);
+            ssize_t n = recv(c, buff, sizeof(buff), 0);
             if (n == 0) // 返回 0：客户端正常关闭连接(EOF)
             {
                 cout << "客户端关闭连接" << endl;
@@ -165,11 +168,51 @@ void TcpSer::Run()
                 cout << "recv 失败: " << strerror(errno) << endl;
                 break;
             }
-            buff[n] = '\0';
-            cout << "收到客户端消息: " << buff << endl;
+            parser.Append(buff, static_cast<size_t>(n));
+
+            MessageHeader header;
+            vector<uint8_t> payload;
+            while (true)
+            {
+                DecodeStatus status = parser.Parse(header, payload);
+
+                if (status == DecodeStatus::COMPLETE)
+                {
+                    // 解析出一条完整消息：打印设备 ID 和 Payload，然后继续解析下一条
+                    cout << "收到消息，设备ID: " << header.device_id
+                         << "，Payload(" << payload.size() << " 字节): ";
+                    for (uint8_t byte : payload)
+                    {
+                        printf("%02x ", static_cast<unsigned int>(byte));
+                    }
+                    cout << endl;
+                    continue;
+                }
+                else if (status == DecodeStatus::INCOMPLETE)
+                {
+                    // 数据不足：跳出解析循环，等待下一次 recv() 补充更多数据
+                    break;
+                }
+                else // DecodeStatus::INVALID
+                {
+                    // 协议错误：打印错误、关闭连接，并结束当前客户端处理循环
+                    cout << "协议错误，关闭客户端连接" << endl;
+                    close(c);
+                    connection_closed = true;
+                    break;
+                }
+            }
+
+            if (connection_closed)
+            {
+                break; // 结束当前客户端处理循环
+            }
         }
 
-        close(c);
+        if (!connection_closed)
+        {
+            close(c);
+        }
     }
 }
 int main()

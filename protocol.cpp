@@ -98,6 +98,21 @@ DecodeStatus DecodeMessage(std::vector<uint8_t> &recv_buf, MessageHeader &header
         return DecodeStatus::INVALID;
     }
 
+    // 3.5 校验消息类型：只允许协议定义的五种类型
+    uint8_t type = recv_buf[5];
+    switch (static_cast<MessageType>(type))
+    {
+    case MessageType::DEVICE_REGISTER:
+    case MessageType::HEARTBEAT:
+    case MessageType::DATA_REPORT:
+    case MessageType::CONTROL_CMD:
+    case MessageType::CONTROL_ACK:
+        break;
+    default:
+        std::cerr << "DecodeMessage: type 非法 (" << static_cast<int>(type) << ")" << std::endl;
+        return DecodeStatus::INVALID;
+    }
+
     // 4. 解析 length 字段（偏移 10 起的 4 字节，网络字节序）
     uint32_t length = read_u32_be(recv_buf.data() + 10);
 
@@ -119,7 +134,7 @@ DecodeStatus DecodeMessage(std::vector<uint8_t> &recv_buf, MessageHeader &header
     // 6. 数据已完整，填充消息头各字段（magic/version 已在前面校验过，直接复用）
     header.magic = magic;
     header.version = version;
-    header.type = static_cast<MessageType>(recv_buf[5]);
+    header.type = static_cast<MessageType>(type);
     header.device_id = read_u32_be(recv_buf.data() + 6);
     header.length = length;
 

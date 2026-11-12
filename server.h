@@ -13,6 +13,10 @@
 #include <jsoncpp/json/json.h>
 #include <mysql/mysql.h>
 
+// mysql 通过 mysql_version.h 定义了宏 PROTOCOL_VERSION，会与 protocol.h 中的
+// constexpr uint8_t PROTOCOL_VERSION 冲突，这里在包含 mysql 头之后清除该宏。
+#undef PROTOCOL_VERSION
+
 using namespace std;
 struct SerConf
 {
