@@ -175,12 +175,111 @@ static void test_sticky_complete_and_half()
     cout << "test_sticky_complete_and_half passed!" << endl;
 }
 
+// 测试 5：最大 Payload（4096 字节）的完整消息解析
+static void test_max_payload()
+{
+    MessageParser parser;
+
+    MessageHeader header;
+    header.magic = PROTOCOL_MAGIC;
+    header.version = PROTOCOL_VERSION;
+    header.type = MessageType::DATA_REPORT;
+    header.device_id = 1;
+    header.length = MAX_PAYLOAD_LEN;
+
+    vector<uint8_t> payload(MAX_PAYLOAD_LEN);
+    for (uint32_t i = 0; i < MAX_PAYLOAD_LEN; ++i)
+    {
+        payload[i] = static_cast<uint8_t>(i % 256);
+    }
+
+    vector<uint8_t> msg = EncodeMessage(header, payload);
+    assert(msg.size() == PROTOCOL_HEADER_LEN + MAX_PAYLOAD_LEN);
+
+    parser.Append(msg.data(), msg.size());
+
+    MessageHeader out_header;
+    vector<uint8_t> out_payload;
+    DecodeStatus status = parser.Parse(out_header, out_payload);
+
+    assert(status == DecodeStatus::COMPLETE);
+    assert(out_header.device_id == 1);
+    assert(out_header.type == MessageType::DATA_REPORT);
+    assert(out_payload.size() == MAX_PAYLOAD_LEN);
+    assert(out_payload == payload);
+
+    cout << "test_max_payload passed!" << endl;
+}
+
+// 测试 6：非法 Magic —— Parse 返回 INVALID，且非法数据未被消费
+static void test_invalid_magic()
+{
+    MessageParser parser;
+
+    MessageHeader header;
+    header.magic = PROTOCOL_MAGIC;
+    header.version = PROTOCOL_VERSION;
+    header.type = MessageType::DEVICE_REGISTER;
+    header.device_id = 1;
+    header.length = 2;
+    vector<uint8_t> payload = {'A', 'B'};
+
+    vector<uint8_t> msg = EncodeMessage(header, payload);
+    msg[0] = 0x00; // 破坏 Magic 首字节
+
+    parser.Append(msg.data(), msg.size());
+
+    MessageHeader out_header;
+    vector<uint8_t> out_payload;
+    DecodeStatus status = parser.Parse(out_header, out_payload);
+    assert(status == DecodeStatus::INVALID);
+
+    // 再次解析仍返回 INVALID，说明非法数据仍保留在内部缓冲区、未被消费
+    status = parser.Parse(out_header, out_payload);
+    assert(status == DecodeStatus::INVALID);
+
+    cout << "test_invalid_magic passed!" << endl;
+}
+
+// 测试 7：非法 Type（0x7F）—— Parse 返回 INVALID，且非法数据未被消费
+static void test_invalid_type()
+{
+    MessageParser parser;
+
+    MessageHeader header;
+    header.magic = PROTOCOL_MAGIC;
+    header.version = PROTOCOL_VERSION;
+    header.type = MessageType::DEVICE_REGISTER;
+    header.device_id = 1;
+    header.length = 2;
+    vector<uint8_t> payload = {'A', 'B'};
+
+    vector<uint8_t> msg = EncodeMessage(header, payload);
+    msg[5] = 0x7F; // 破坏 Type 字段（不属于五种合法类型）
+
+    parser.Append(msg.data(), msg.size());
+
+    MessageHeader out_header;
+    vector<uint8_t> out_payload;
+    DecodeStatus status = parser.Parse(out_header, out_payload);
+    assert(status == DecodeStatus::INVALID);
+
+    // 再次解析仍返回 INVALID，说明非法数据仍保留在内部缓冲区、未被消费
+    status = parser.Parse(out_header, out_payload);
+    assert(status == DecodeStatus::INVALID);
+
+    cout << "test_invalid_type passed!" << endl;
+}
+
 int main()
 {
     test_append_one_complete_message();
     test_append_one_message_in_two_parts();
     test_append_two_complete_messages();
     test_sticky_complete_and_half();
+    test_max_payload();
+    test_invalid_magic();
+    test_invalid_type();
 
     cout << "All tests passed!" << endl;
     return 0;

@@ -124,11 +124,14 @@ static void test_invalid_type()
 
     vector<uint8_t> sendbuff = EncodeMessage(header, payload);
 
+    vector<uint8_t> snapshot = sendbuff; // 用于校验缓冲区未被消费
     MessageHeader deheader;
     vector<uint8_t> depayload;
     DecodeStatus status = DecodeMessage(sendbuff, deheader, depayload);
 
     assert(status == DecodeStatus::INVALID);
+    assert(sendbuff.size() == snapshot.size());
+    assert(sendbuff == snapshot); // 缓冲区内容和大小不变
 
     cout << "test_invalid_type passed!" << endl;
 }
@@ -245,6 +248,40 @@ static void test_invalid_length()
     cout << "test_invalid_length passed!" << endl;
 }
 
+// 测试 10：Payload 长度恰好为 MAX_PAYLOAD_LEN（4096）的合法边界
+static void test_max_payload_boundary()
+{
+    MessageHeader header;
+    header.magic = PROTOCOL_MAGIC;
+    header.version = PROTOCOL_VERSION;
+    header.type = MessageType::DATA_REPORT;
+    header.device_id = 1;
+    header.length = MAX_PAYLOAD_LEN;
+
+    vector<uint8_t> payload(MAX_PAYLOAD_LEN);
+    for (uint32_t i = 0; i < MAX_PAYLOAD_LEN; ++i)
+    {
+        payload[i] = static_cast<uint8_t>(i % 256);
+    }
+
+    vector<uint8_t> sendbuff = EncodeMessage(header, payload);
+    assert(sendbuff.size() == PROTOCOL_HEADER_LEN + MAX_PAYLOAD_LEN); // 14 + 4096 = 4110
+
+    MessageHeader deheader;
+    vector<uint8_t> depayload;
+    DecodeStatus status = DecodeMessage(sendbuff, deheader, depayload);
+
+    assert(status == DecodeStatus::COMPLETE);
+    assert(deheader.device_id == 1);
+    assert(deheader.type == MessageType::DATA_REPORT);
+    assert(deheader.length == MAX_PAYLOAD_LEN);
+    assert(depayload.size() == MAX_PAYLOAD_LEN);
+    assert(depayload == payload); // 内容一致
+    assert(sendbuff.size() == 0); // 接收缓冲区被完整消费
+
+    cout << "test_max_payload_boundary passed!" << endl;
+}
+
 int main()
 {
     test_empty_packet();
@@ -256,6 +293,7 @@ int main()
     test_invalid_magic();
     test_invalid_version();
     test_invalid_length();
+    test_max_payload_boundary();
 
     cout << "All tests passed!" << endl;
     return 0;
