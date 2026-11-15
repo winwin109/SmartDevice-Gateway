@@ -2,6 +2,43 @@
 #include "message_parser.h"
 #include <signal.h>
 
+namespace
+{
+    // 编码并发送一条完整协议消息，循环发送直到全部字节发出；返回是否成功
+    bool SendMessage(int sockfd, const MessageHeader &header, const vector<uint8_t> &payload)
+    {
+        vector<uint8_t> message = EncodeMessage(header, payload);
+        if (message.empty())
+        {
+            cout << "消息编码失败" << endl;
+            return false;
+        }
+
+        size_t total = message.size();
+        size_t sent = 0;
+        while (sent < total)
+        {
+            ssize_t n = send(sockfd, message.data() + sent, total - sent, 0);
+            if (n == 0) // 返回 0：连接已关闭，避免死循环
+            {
+                cout << "发送失败: 连接已关闭" << endl;
+                return false;
+            }
+            if (n < 0)
+            {
+                if (errno == EINTR) // 被信号中断，重试而非当作错误
+                {
+                    continue;
+                }
+                cout << "发送失败: " << strerror(errno) << endl;
+                return false;
+            }
+            sent += (size_t)n;
+        }
+        return true;
+    }
+} // namespace
+
 bool TcpClient::Socket_Init()
 {
     // 忽略 SIGPIPE：若服务端已关闭连接，客户端再次 send() 时默认会收到 SIGPIPE
@@ -37,6 +74,25 @@ void TcpClient::Run()
 {
     cout << "已连接服务器，输入消息发送（输入 exit 退出）" << endl;
 
+    // 连接建立后先发送一条 DEVICE_REGISTER 注册本设备（payload 为空）
+    {
+        MessageHeader reg_header;
+        reg_header.magic = PROTOCOL_MAGIC;
+        reg_header.version = PROTOCOL_VERSION;
+        reg_header.type = MessageType::DEVICE_REGISTER;
+        reg_header.device_id = 100;
+        reg_header.length = 0;
+
+        vector<uint8_t> empty_payload;
+        if (!SendMessage(sockfd, reg_header, empty_payload))
+        {
+            cout << "设备注册消息发送失败，结束客户端" << endl;
+            return;
+        }
+
+        cout << "已发送设备注册消息，Device ID: " << reg_header.device_id << endl;
+    }
+
     string line;
     while (runing)
     {
@@ -64,36 +120,8 @@ void TcpClient::Run()
         header.device_id = 100;
         header.length = payload.size();
 
-        // 3. 编码完整协议消息
-        vector<uint8_t> message = EncodeMessage(header, payload);
-        // 循环发送，防止 send 只发送部分数据（TCP 是字节流，单次 send 可能只发出部分字节）
-        size_t total = message.size(); // 发送总长度 = 编码后的完整协议消息字节数
-        size_t sent = 0;               // 已发送字节数
-        bool send_ok = true;
-        while (sent < total)
-        {
-            // 起始地址：编码消息缓冲区 + 已发送字节数；剩余长度 = total - sent
-            ssize_t n = send(sockfd, message.data() + sent, total - sent, 0);
-            if (n == 0) // 返回 0：连接已关闭，避免死循环
-            {
-                cout << "发送失败: 连接已关闭" << endl;
-                send_ok = false;
-                break;
-            }
-            if (n < 0)
-            {
-                if (errno == EINTR) // 被信号中断，重试而非当作错误
-                {
-                    continue;
-                }
-                cout << "发送失败: " << strerror(errno) << endl;
-                send_ok = false;
-                break;
-            }
-            sent += (size_t)n;
-        }
-
-        if (!send_ok)
+        // 3. 编码并发送
+        if (!SendMessage(sockfd, header, payload))
         {
             break;
         }

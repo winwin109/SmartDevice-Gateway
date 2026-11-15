@@ -149,8 +149,11 @@ void TcpSer::Run()
 
         MessageParser parser; // 每个客户端连接一个独立的解析器，避免不同连接间的数据互相串扰
 
+        // 当前连接的注册状态：一个 TCP 连接最多只允许注册一个设备 ID
+        bool registered = false;
+        uint32_t registered_device_id = 0;
+
         uint8_t buff[1024] = {0};
-        bool connection_closed = false; // 标记当前客户端连接是否已在 INVALID 分支中被关闭
         while (true) // 同一个客户端可以连续发送多条消息
         {
             ssize_t n = recv(c, buff, sizeof(buff), 0);
@@ -172,20 +175,95 @@ void TcpSer::Run()
 
             MessageHeader header;
             vector<uint8_t> payload;
+            bool invalid_protocol = false;
             while (true)
             {
                 DecodeStatus status = parser.Parse(header, payload);
 
                 if (status == DecodeStatus::COMPLETE)
                 {
-                    // 解析出一条完整消息：打印设备 ID 和 Payload，然后继续解析下一条
-                    cout << "收到消息，设备ID: " << header.device_id
-                         << "，Payload(" << payload.size() << " 字节): ";
-                    for (uint8_t byte : payload)
+                    switch (header.type)
                     {
-                        printf("%02x ", static_cast<unsigned int>(byte));
+                    case MessageType::DEVICE_REGISTER:
+                    {
+                        // 一个连接只允许注册一次；重复注册直接拒绝
+                        if (registered)
+                        {
+                            cout << "当前连接已注册设备，拒绝重复注册" << endl;
+                        }
+                        else if (m_device_manager.RegisterDevice(header.device_id, c))
+                        {
+                            registered = true;
+                            registered_device_id = header.device_id;
+                            cout << "设备注册成功，Device ID: " << header.device_id << endl;
+                        }
+                        else
+                        {
+                            // 注册失败（如该 ID 已在线），不得覆盖已有 Socket/在线状态
+                            cout << "设备注册失败，Device ID: " << header.device_id << endl;
+                        }
+                        break;
                     }
-                    cout << endl;
+                    case MessageType::DATA_REPORT:
+                    {
+                        // 必须先注册，且消息 Device ID 必须等于本连接注册的 Device ID
+                        if (!registered)
+                        {
+                            cout << "当前连接未注册设备，拒绝处理 DATA_REPORT" << endl;
+                            break;
+                        }
+                        if (header.device_id != registered_device_id)
+                        {
+                            cout << "消息 Device ID 与当前连接注册的设备不一致，拒绝处理 DATA_REPORT" << endl;
+                            break;
+                        }
+                        // DeviceManager 中该设备仍在线，且 sockfd 等于当前连接
+                        DeviceInfo *dev = m_device_manager.GetDevice(registered_device_id);
+                        if (dev == nullptr || !dev->online || dev->sockfd != c)
+                        {
+                            cout << "设备状态校验失败，拒绝处理 DATA_REPORT" << endl;
+                            break;
+                        }
+                        // 校验通过，沿用现有打印逻辑
+                        cout << "收到 DATA_REPORT，设备ID: " << header.device_id
+                             << "，Payload(" << payload.size() << " 字节): ";
+                        for (uint8_t byte : payload)
+                        {
+                            printf("%02x ", static_cast<unsigned int>(byte));
+                        }
+                        cout << endl;
+                        break;
+                    }
+                    case MessageType::HEARTBEAT:
+                    {
+                        // 与 DATA_REPORT 做相同的身份/状态校验，暂不实现超时机制
+                        if (!registered || header.device_id != registered_device_id)
+                        {
+                            cout << "心跳身份校验失败，拒绝处理 HEARTBEAT" << endl;
+                            break;
+                        }
+                        DeviceInfo *dev = m_device_manager.GetDevice(registered_device_id);
+                        if (dev == nullptr || !dev->online || dev->sockfd != c)
+                        {
+                            cout << "心跳设备状态校验失败，拒绝处理 HEARTBEAT" << endl;
+                            break;
+                        }
+                        cout << "收到 HEARTBEAT，设备ID: " << header.device_id << endl;
+                        break;
+                    }
+                    case MessageType::CONTROL_CMD:
+                    case MessageType::CONTROL_ACK:
+                    {
+                        // 暂不实现业务处理
+                        cout << "暂不处理该消息类型: " << static_cast<int>(header.type) << endl;
+                        break;
+                    }
+                    default:
+                    {
+                        cout << "未知消息类型: " << static_cast<int>(header.type) << endl;
+                        break;
+                    }
+                    }
                     continue;
                 }
                 else if (status == DecodeStatus::INCOMPLETE)
@@ -195,24 +273,26 @@ void TcpSer::Run()
                 }
                 else // DecodeStatus::INVALID
                 {
-                    // 协议错误：打印错误、关闭连接，并结束当前客户端处理循环
+                    // 协议错误：结束当前连接处理，统一走下方的设备下线与关闭逻辑
                     cout << "协议错误，关闭客户端连接" << endl;
-                    close(c);
-                    connection_closed = true;
+                    invalid_protocol = true;
                     break;
                 }
             }
 
-            if (connection_closed)
+            if (invalid_protocol)
             {
                 break; // 结束当前客户端处理循环
             }
         }
 
-        if (!connection_closed)
+        // 统一清理：若本连接注册过设备则标记离线，再关闭 socket。
+        // 三条退出路径(recv==0 / recv 出错 / 协议错误)都在此处 close，且只 close 一次。
+        if (registered)
         {
-            close(c);
+            m_device_manager.MarkOffline(registered_device_id, c);
         }
+        close(c);
     }
 }
 int main()

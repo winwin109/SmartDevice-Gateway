@@ -17,6 +17,8 @@
 // constexpr uint8_t PROTOCOL_VERSION 冲突，这里在包含 mysql 头之后清除该宏。
 #undef PROTOCOL_VERSION
 
+#include "device_manager.h"
+
 using namespace std;
 struct SerConf
 {
@@ -53,4 +55,5 @@ private:
 private:
     int m_sockfd;   // 监听套接子
     SerConf m_conf; // 配置文件的信息
+    DeviceManager m_device_manager; // 设备注册/在线状态管理
 };
