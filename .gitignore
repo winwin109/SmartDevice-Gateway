@@ -22,6 +22,7 @@ protocol_test
 message_parser_test
 e2e_test_client
 device_manager_test
+illegal_protocol_test_client
 
 # 临时文件
 *.o
