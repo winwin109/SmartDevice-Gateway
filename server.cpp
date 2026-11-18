@@ -5,6 +5,21 @@
 #endif
 
 #include "server.h"
+#include <signal.h>
+
+namespace
+{
+    // 全局退出标志：信号处理器只写、主循环只读。
+    // volatile sig_atomic_t 是 C 标准唯一保证可在信号处理器中安全写入的普通对象类型；
+    // 单线程进程下信号处理器与主循环运行在同一线程，volatile 足以防止编译器把读取缓存到寄存器。
+    volatile sig_atomic_t g_stop = 0;
+
+    void HandleSignal(int /*signo*/)
+    {
+        g_stop = 1;
+    }
+} // namespace
+
 bool SerConf::ReadConf(string filename) // 读取配置文件
 {
     FILE *fp = fopen(filename.c_str(), "r");
@@ -197,18 +212,21 @@ void TcpSer::Run()
     const int MAX_EVENTS = 128; // 事件数组大小（可用 m_conf.taskmax，但需保证 >= 1）
     struct epoll_event events[MAX_EVENTS];
 
-    while (true)
+    while (!g_stop)
     {
-        int nfds = epoll_wait(m_epfd, events, MAX_EVENTS, -1);
+        // 1000ms 有限超时：避免信号落在「while 条件检查」与「epoll_wait 进入内核」之间的
+        // TOCTOU 竞态窗口时，无限等待 -1 导致退出标志被漏掉。
+        int nfds = epoll_wait(m_epfd, events, MAX_EVENTS, 1000);
         if (nfds == -1)
         {
             if (errno == EINTR)
             {
-                continue; // 被信号中断，重试
+                continue; // 被信号中断：回到 while 条件重新检查 g_stop
             }
             cout << "epoll_wait 失败: " << strerror(errno) << endl;
             break; // 出错退出事件循环
         }
+        // nfds == 0：超时，无就绪事件，正常进入下一轮循环（重新检查 g_stop）
 
         for (int i = 0; i < nfds; ++i)
         {
@@ -290,14 +308,22 @@ bool TcpSer::HandleClient(int fd, uint32_t events)
     {
         int sock_err = 0;
         socklen_t len = sizeof(sock_err);
-        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &sock_err, &len) == 0 && sock_err != 0)
+        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &sock_err, &len) != 0)
+        {
+            // getsockopt 失败：无法获取错误码，输出失败原因并按错误处理，
+            // 交由现有连接清理流程关闭，避免真实错误事件被静默吞掉。
+            cout << "getsockopt(SO_ERROR) 失败, fd: " << fd
+                 << ": " << strerror(errno) << endl;
+            return true;
+        }
+        if (sock_err != 0)
         {
             // 存在不可恢复错误，标记需要关闭
             cout << "连接发生错误, fd: " << fd
                  << ", errno: " << sock_err << " (" << strerror(sock_err) << ")" << endl;
             return true;
         }
-        // SO_ERROR == 0（或 getsockopt 失败）：无实际错误，继续尝试读取
+        // SO_ERROR == 0：无实际错误，不因 EPOLLERR 标志直接关闭，继续后续处理流程
     }
 
     // 2. 可读 / 半关闭 / 挂起事件：优先读取已到达的数据，ET 下必须读到 EAGAIN
@@ -491,6 +517,23 @@ void TcpSer::CloseConnection(int fd)
 
 int main()
 {
+    // 注册 SIGINT / SIGTERM 优雅退出信号（不设置 SA_RESTART）。
+    // 必须在创建 TcpSer 与进入 Run() 之前完成，使运行期间信号能被捕获。
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = HandleSignal; // 仅置位 g_stop，不设 SA_RESTART
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGINT, &sa, nullptr) == -1)
+    {
+        cout << "注册 SIGINT 处理失败: " << strerror(errno) << endl;
+        return 1;
+    }
+    if (sigaction(SIGTERM, &sa, nullptr) == -1)
+    {
+        cout << "注册 SIGTERM 处理失败: " << strerror(errno) << endl;
+        return 1;
+    }
+
     SerConf conf;
     if (!conf.ReadConf("my.cnf"))
     {
